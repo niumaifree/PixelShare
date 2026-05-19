@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useUser } from "@clerk/react";
+import { supabase } from "@/lib/supabase";
 
 export interface Favorite {
   id: string;
@@ -16,28 +17,12 @@ export interface Image {
   createdAt: string;
 }
 
-const FAVORITES_KEY = "pixelshare_favorites";
-const IMAGES_KEY = "pixelshare_images";
-
-function loadFromStorage<T>(key: string): T[] {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveToStorage<T>(key: string, data: T[]): void {
-  localStorage.setItem(key, JSON.stringify(data));
-}
-
 export function getListFavoritesQueryKey(): string[] {
   return ["favorites"];
 }
 
 export function getListImagesQueryKey(): string[] {
-  return ["images"];
+  return ["community_images"];
 }
 
 export function useListFavorites(options?: {
@@ -47,10 +32,20 @@ export function useListFavorites(options?: {
   const enabled = options?.query?.enabled ?? true;
   return useQuery({
     queryKey: options?.query?.queryKey ?? getListFavoritesQueryKey(),
-    queryFn: (): Favorite[] => {
+    queryFn: async (): Promise<Favorite[]> => {
       if (!user) return [];
-      const all = loadFromStorage<Favorite>(FAVORITES_KEY);
-      return all.filter((f) => f.userId === user.id);
+      const { data, error } = await supabase
+        .from("favorites")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id,
+        imageUrl: r.image_url,
+        userId: r.user_id,
+        createdAt: r.created_at,
+      }));
     },
     enabled,
   });
@@ -62,19 +57,16 @@ export function useAddFavorite() {
   return useMutation({
     mutationFn: async (args: { data: { imageUrl: string } }) => {
       if (!user) throw new Error("Not signed in");
-      const all = loadFromStorage<Favorite>(FAVORITES_KEY);
-      const already = all.find(
-        (f) => f.userId === user.id && f.imageUrl === args.data.imageUrl
-      );
-      if (already) return already;
-      const newFav: Favorite = {
-        id: crypto.randomUUID(),
-        imageUrl: args.data.imageUrl,
-        userId: user.id,
-        createdAt: new Date().toISOString(),
-      };
-      saveToStorage(FAVORITES_KEY, [...all, newFav]);
-      return newFav;
+      const { data, error } = await supabase
+        .from("favorites")
+        .upsert(
+          { image_url: args.data.imageUrl, user_id: user.id },
+          { onConflict: "user_id,image_url" }
+        )
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getListFavoritesQueryKey() });
@@ -88,11 +80,12 @@ export function useRemoveFavoriteByUrl() {
   return useMutation({
     mutationFn: async (args: { data: { imageUrl: string } }) => {
       if (!user) throw new Error("Not signed in");
-      const all = loadFromStorage<Favorite>(FAVORITES_KEY);
-      const updated = all.filter(
-        (f) => !(f.userId === user.id && f.imageUrl === args.data.imageUrl)
-      );
-      saveToStorage(FAVORITES_KEY, updated);
+      const { error } = await supabase
+        .from("favorites")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("image_url", args.data.imageUrl);
+      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getListFavoritesQueryKey() });
@@ -103,8 +96,19 @@ export function useRemoveFavoriteByUrl() {
 export function useListImages() {
   return useQuery({
     queryKey: getListImagesQueryKey(),
-    queryFn: (): Image[] => {
-      return loadFromStorage<Image>(IMAGES_KEY);
+    queryFn: async (): Promise<Image[]> => {
+      const { data, error } = await supabase
+        .from("community_images")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data ?? []).map((r) => ({
+        id: r.id,
+        imageUrl: r.image_url,
+        title: r.title,
+        userId: r.user_id,
+        createdAt: r.created_at,
+      }));
     },
   });
 }
@@ -115,16 +119,17 @@ export function useAddUpload() {
   return useMutation({
     mutationFn: async (args: { data: { imageUrl: string; title?: string | null } }) => {
       if (!user) throw new Error("Not signed in");
-      const all = loadFromStorage<Image>(IMAGES_KEY);
-      const newImage: Image = {
-        id: crypto.randomUUID(),
-        imageUrl: args.data.imageUrl,
-        title: args.data.title ?? null,
-        userId: user.id,
-        createdAt: new Date().toISOString(),
-      };
-      saveToStorage(IMAGES_KEY, [newImage, ...all]);
-      return newImage;
+      const { data, error } = await supabase
+        .from("community_images")
+        .insert({
+          image_url: args.data.imageUrl,
+          title: args.data.title ?? null,
+          user_id: user.id,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: getListImagesQueryKey() });
