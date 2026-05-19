@@ -37,16 +37,42 @@ interface GalleryImage {
 }
 
 // ---------------------------------------------------------------------------
-// Unsplash image loader — fetches high-quality photos via Unsplash API
+// Image loaders — Picsum + Unsplash, merged together
 // ---------------------------------------------------------------------------
 const BATCH = 20;
 const UNSPLASH_ACCESS_KEY = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string;
 
-async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
-  if (!UNSPLASH_ACCESS_KEY) {
-    console.warn("VITE_UNSPLASH_ACCESS_KEY is not set");
-    return [];
+const PICSUM_TOTAL_PAGES = 100;
+const SESSION_START_PAGE = Math.floor(Math.random() * PICSUM_TOTAL_PAGES) + 1;
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
   }
+  return a;
+}
+
+async function fetchPicsumPage(pageIndex: number): Promise<GalleryImage[]> {
+  const page = ((SESSION_START_PAGE + pageIndex - 1) % PICSUM_TOTAL_PAGES) + 1;
+  const res = await fetch(`https://picsum.photos/v2/list?page=${page}&limit=${BATCH}`);
+  if (!res.ok) return [];
+  const data = await res.json() as {
+    id: string; author: string; width: number; height: number;
+  }[];
+  return data.map(img => {
+    const h = Math.round(400 * img.height / img.width);
+    return {
+      id: `picsum-${img.id}`,
+      imageUrl: `https://picsum.photos/id/${img.id}/400/${h}`,
+      title: img.author,
+    };
+  });
+}
+
+async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
+  if (!UNSPLASH_ACCESS_KEY) return [];
   const res = await fetch(
     `https://api.unsplash.com/photos?page=${pageIndex}&per_page=${BATCH}&order_by=latest`,
     { headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` } }
@@ -57,13 +83,21 @@ async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
     description: string | null;
     alt_description: string | null;
     user: { name: string };
-    urls: { regular: string; full: string };
+    urls: { regular: string };
   }[];
   return data.map(img => ({
     id: `unsplash-${img.id}`,
     imageUrl: img.urls.regular,
     title: img.description ?? img.alt_description ?? img.user.name,
   }));
+}
+
+async function fetchMergedPage(pageIndex: number): Promise<GalleryImage[]> {
+  const [picsum, unsplash] = await Promise.all([
+    fetchPicsumPage(pageIndex),
+    fetchUnsplashPage(pageIndex),
+  ]);
+  return shuffle([...picsum, ...unsplash]);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +150,7 @@ export function BrowsePage() {
     const pageIndex = batchRef.current + 1;
     batchRef.current = pageIndex;
     try {
-      const newImages = await fetchUnsplashPage(pageIndex);
+      const newImages = await fetchMergedPage(pageIndex);
       if (newImages.length > 0) {
         setImages(prev => {
           const seen = new Set(prev.map(i => i.id));
@@ -136,7 +170,7 @@ export function BrowsePage() {
       isLoadingRef.current = true;
       batchRef.current = 2;
       try {
-        const [p1, p2] = await Promise.all([fetchUnsplashPage(1), fetchUnsplashPage(2)]);
+        const [p1, p2] = await Promise.all([fetchMergedPage(1), fetchMergedPage(2)]);
         setImages([...p1, ...p2]);
       } finally {
         isLoadingRef.current = false;
