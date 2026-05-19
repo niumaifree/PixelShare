@@ -27,9 +27,7 @@
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/YOUR_USERNAME/YOUR_REPO&env=VITE_CLERK_PUBLISHABLE_KEY,VITE_UNSPLASH_ACCESS_KEY,VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY&envDescription=填写以下环境变量，详见README&project-name=pixelshare&framework=vite)
-
-> 替换链接中的 `YOUR_USERNAME/YOUR_REPO` 为你自己的 GitHub 仓库地址。
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/niumaifree/PixelShare&env=VITE_CLERK_PUBLISHABLE_KEY,VITE_UNSPLASH_ACCESS_KEY,VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY&envDescription=填写以下环境变量，详见README&project-name=pixelshare&framework=vite)
 
 ### Cloudflare Pages
 
