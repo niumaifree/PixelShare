@@ -37,40 +37,32 @@ interface GalleryImage {
 }
 
 // ---------------------------------------------------------------------------
-// Real image loader — fetches actual photo metadata from Picsum so each image
-// is requested at its true original aspect ratio (portrait photos are tall,
-// landscape photos are wide — exactly as shot).
+// Unsplash image loader — fetches high-quality photos via Unsplash API
 // ---------------------------------------------------------------------------
 const BATCH = 20;
-// Start at a random page so every session shows a different set of photos
-const PICSUM_TOTAL_PAGES = 100;
-const SESSION_START_PAGE = Math.floor(Math.random() * PICSUM_TOTAL_PAGES) + 1;
+const UNSPLASH_ACCESS_KEY = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string;
 
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
+  if (!UNSPLASH_ACCESS_KEY) {
+    console.warn("VITE_UNSPLASH_ACCESS_KEY is not set");
+    return [];
   }
-  return a;
-}
-
-async function fetchPicsumPage(pageIndex: number): Promise<GalleryImage[]> {
-  const page = ((SESSION_START_PAGE + pageIndex - 1) % PICSUM_TOTAL_PAGES) + 1;
-  const res = await fetch(`https://picsum.photos/v2/list?page=${page}&limit=${BATCH}`);
+  const res = await fetch(
+    `https://api.unsplash.com/photos?page=${pageIndex}&per_page=${BATCH}&order_by=latest`,
+    { headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` } }
+  );
   if (!res.ok) return [];
   const data = await res.json() as {
-    id: string; author: string; width: number; height: number;
+    id: string;
+    description: string | null;
+    alt_description: string | null;
+    user: { name: string };
+    urls: { regular: string; full: string };
   }[];
-  // Shuffle so portrait/landscape photos are interleaved across all 4 columns
-  return shuffle(data.map(img => {
-    const h = Math.round(400 * img.height / img.width);
-    return {
-      id: `picsum-${img.id}`,
-      // Request at exact original aspect ratio — no cropping or distortion
-      imageUrl: `https://picsum.photos/id/${img.id}/400/${h}`,
-      title: img.author,
-    };
+  return data.map(img => ({
+    id: `unsplash-${img.id}`,
+    imageUrl: img.urls.regular,
+    title: img.description ?? img.alt_description ?? img.user.name,
   }));
 }
 
@@ -124,7 +116,7 @@ export function BrowsePage() {
     const pageIndex = batchRef.current + 1;
     batchRef.current = pageIndex;
     try {
-      const newImages = await fetchPicsumPage(pageIndex);
+      const newImages = await fetchUnsplashPage(pageIndex);
       if (newImages.length > 0) {
         setImages(prev => {
           const seen = new Set(prev.map(i => i.id));
@@ -144,7 +136,7 @@ export function BrowsePage() {
       isLoadingRef.current = true;
       batchRef.current = 2;
       try {
-        const [p1, p2] = await Promise.all([fetchPicsumPage(1), fetchPicsumPage(2)]);
+        const [p1, p2] = await Promise.all([fetchUnsplashPage(1), fetchUnsplashPage(2)]);
         setImages([...p1, ...p2]);
       } finally {
         isLoadingRef.current = false;
