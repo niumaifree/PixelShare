@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 
 interface LightboxProps {
   url: string;
+  favoriteUrl?: string;
   isOpen: boolean;
   onClose: () => void;
   isFavorited?: boolean;
@@ -14,6 +15,7 @@ interface LightboxProps {
 
 export default function Lightbox({
   url,
+  favoriteUrl,
   isOpen,
   onClose,
   isFavorited,
@@ -36,14 +38,17 @@ export default function Lightbox({
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [isOpen, onClose]);
 
   if (!show && !isOpen) return null;
+
+  const keyUrl = favoriteUrl || url;
 
   return (
     <div
@@ -80,7 +85,7 @@ export default function Lightbox({
               variant="secondary"
               size="icon"
               className="rounded-full bg-white/10 hover:bg-white/20 border-0 text-white"
-              onClick={() => onFavorite(url)}
+              onClick={() => onFavorite(keyUrl)}
             >
               <Heart
                 className={isFavorited ? "fill-primary text-primary" : ""}

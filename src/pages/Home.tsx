@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { downloadImage } from "@/lib/utils";
+import { Search, X } from "lucide-react";
 import Header from "@/components/Header";
 import ImageCard from "@/components/ImageCard";
 import MasonryGrid from "@/components/MasonryGrid";
@@ -24,19 +25,22 @@ import {
 // ---------------------------------------------------------------------------
 interface GalleryImage {
   id: string;
-  imageUrl: string;
+  imageUrl: string;   // thumbnail (~400px) used in the grid and as the favorites key
+  fullUrl: string;    // full-quality URL used in the lightbox and for downloads
   title?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Image loaders — Picsum + Unsplash, merged together
+// Constants
 // ---------------------------------------------------------------------------
 const BATCH = 20;
 const UNSPLASH_ACCESS_KEY = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string;
-
 const PICSUM_TOTAL_PAGES = 100;
 const SESSION_START_PAGE = Math.floor(Math.random() * PICSUM_TOTAL_PAGES) + 1;
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -46,18 +50,21 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+// ---------------------------------------------------------------------------
+// Image fetchers
+// ---------------------------------------------------------------------------
 async function fetchPicsumPage(pageIndex: number): Promise<GalleryImage[]> {
   const page = ((SESSION_START_PAGE + pageIndex - 1) % PICSUM_TOTAL_PAGES) + 1;
   const res = await fetch(`https://picsum.photos/v2/list?page=${page}&limit=${BATCH}`);
   if (!res.ok) return [];
-  const data = await res.json() as {
-    id: string; author: string; width: number; height: number;
-  }[];
+  const data = await res.json() as { id: string; author: string; width: number; height: number }[];
   return data.map(img => {
-    const h = Math.round(400 * img.height / img.width);
+    const thumbH = Math.round(400 * img.height / img.width);
+    const fullH = Math.round(1200 * img.height / img.width);
     return {
       id: `picsum-${img.id}`,
-      imageUrl: `https://picsum.photos/id/${img.id}/400/${h}`,
+      imageUrl: `https://picsum.photos/id/${img.id}/400/${thumbH}`,
+      fullUrl: `https://picsum.photos/id/${img.id}/1200/${fullH}`,
       title: img.author,
     };
   });
@@ -79,8 +86,8 @@ async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
   }[];
   return data.map(img => ({
     id: `unsplash-${img.id}`,
-    // Use `small` (~400px) for the grid, `regular` is served separately for lightbox
     imageUrl: img.urls.small,
+    fullUrl: img.urls.regular,
     title: img.description ?? img.alt_description ?? img.user.name,
   }));
 }
@@ -93,15 +100,44 @@ async function fetchMergedPage(pageIndex: number): Promise<GalleryImage[]> {
   return shuffle([...picsum, ...unsplash]);
 }
 
+async function searchUnsplash(query: string, pageIndex: number): Promise<GalleryImage[]> {
+  if (!UNSPLASH_ACCESS_KEY || !query.trim()) return [];
+  const res = await fetch(
+    `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&page=${pageIndex}&per_page=${BATCH}`,
+    { headers: { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` } }
+  );
+  if (!res.ok) return [];
+  const data = await res.json() as {
+    results: {
+      id: string;
+      description: string | null;
+      alt_description: string | null;
+      user: { name: string };
+      urls: { small: string; regular: string };
+    }[];
+  };
+  return (data.results ?? []).map(img => ({
+    id: `unsplash-search-${img.id}`,
+    imageUrl: img.urls.small,
+    fullUrl: img.urls.regular,
+    title: img.description ?? img.alt_description ?? img.user.name,
+  }));
+}
+
 // ---------------------------------------------------------------------------
-// BrowsePage — infinite scroll
+// BrowsePage — infinite scroll + keyword search
 // ---------------------------------------------------------------------------
 export function BrowsePage() {
   const [images, setImages] = useState<GalleryImage[]>([]);
   const batchRef = useRef(0);
   const isLoadingRef = useRef(false);
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightboxKey, setLightboxKey] = useState<string | null>(null); // imageUrl (favorites key)
   const [shareOpen, setShareOpen] = useState(false);
+
+  // Search state
+  const [inputQuery, setInputQuery] = useState("");
+  const [activeQuery, setActiveQuery] = useState(""); // debounced
+  const isSearchMode = activeQuery.trim().length > 0;
 
   const { isSignedIn } = useUser();
   const [, setLocation] = useLocation();
@@ -117,13 +153,28 @@ export function BrowsePage() {
 
   const favoriteUrls = useMemo(() => new Set(favorites.map((f) => f.imageUrl)), [favorites]);
 
+  // Debounce search input → activeQuery
+  useEffect(() => {
+    const timer = setTimeout(() => setActiveQuery(inputQuery), 400);
+    return () => clearTimeout(timer);
+  }, [inputQuery]);
+
+  // Reset gallery when search mode changes
+  useEffect(() => {
+    setImages([]);
+    batchRef.current = 0;
+    isLoadingRef.current = false;
+  }, [activeQuery]);
+
   const loadMore = useCallback(async () => {
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     const pageIndex = batchRef.current + 1;
     batchRef.current = pageIndex;
     try {
-      const newImages = await fetchMergedPage(pageIndex);
+      const newImages = isSearchMode
+        ? await searchUnsplash(activeQuery, pageIndex)
+        : await fetchMergedPage(pageIndex);
       if (newImages.length > 0) {
         setImages(prev => {
           const seen = new Set(prev.map(i => i.id));
@@ -132,31 +183,36 @@ export function BrowsePage() {
       }
     } catch {
       toast({ title: "Failed to load more photos", variant: "destructive" });
-      // Revert page counter so next scroll attempt retries the same page
       batchRef.current = pageIndex - 1;
     } finally {
       isLoadingRef.current = false;
     }
-  }, [toast]);
+  }, [activeQuery, isSearchMode, toast]);
 
-  // Pre-load first two pages on mount in parallel
+  // Initial load (also re-runs when activeQuery changes via the reset effect)
   useEffect(() => {
-    (async () => {
-      isLoadingRef.current = true;
-      batchRef.current = 2;
-      try {
-        const [p1, p2] = await Promise.all([fetchMergedPage(1), fetchMergedPage(2)]);
-        setImages([...p1, ...p2]);
-      } catch {
-        toast({ title: "Failed to load photos", variant: "destructive" });
-      } finally {
-        isLoadingRef.current = false;
-      }
-    })();
+    if (isSearchMode) {
+      // Single first page for search
+      loadMore();
+    } else {
+      // Pre-load first two pages in parallel for the feed
+      (async () => {
+        isLoadingRef.current = true;
+        batchRef.current = 2;
+        try {
+          const [p1, p2] = await Promise.all([fetchMergedPage(1), fetchMergedPage(2)]);
+          setImages([...p1, ...p2]);
+        } catch {
+          toast({ title: "Failed to load photos", variant: "destructive" });
+        } finally {
+          isLoadingRef.current = false;
+        }
+      })();
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeQuery]);
 
-  // Scroll-based infinite load — throttled with a rAF flag
+  // Scroll-based infinite load — throttled with rAF
   useEffect(() => {
     let ticking = false;
     const onScroll = () => {
@@ -173,10 +229,22 @@ export function BrowsePage() {
     return () => window.removeEventListener("scroll", onScroll);
   }, [loadMore]);
 
+  const lightboxImg = useMemo(
+    () => (lightboxKey ? images.find(i => i.imageUrl === lightboxKey) ?? null : null),
+    [lightboxKey, images]
+  );
+
   const handleDownload = useCallback(async (url: string) => {
     toast({ title: "Downloading…" });
-    try { await downloadImage(url); }
-    catch { toast({ title: "Download failed", variant: "destructive" }); }
+    try {
+      await downloadImage(url);
+    } catch (e) {
+      if ((e as Error).message === "cors_fallback") {
+        toast({ title: "Opened in new tab", description: "Source site blocks direct download." });
+      } else {
+        toast({ title: "Download failed", variant: "destructive" });
+      }
+    }
   }, [toast]);
 
   const handleFavorite = useCallback((url: string) => {
@@ -218,10 +286,53 @@ export function BrowsePage() {
     );
   }, [addUpload, toast, queryClient, setLocation]);
 
+  const clearSearch = useCallback(() => {
+    setInputQuery("");
+    setActiveQuery("");
+  }, []);
+
   return (
     <div className="min-h-screen bg-background">
       <Header onShare={handleShare} />
+
+      {/* Search bar */}
+      <div className="sticky top-[57px] z-[999] bg-white/90 backdrop-blur-[12px] border-b border-gray-100 px-[4%] py-3">
+        <div className="max-w-[1600px] mx-auto">
+          <div className="relative max-w-md">
+            <Search
+              size={16}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+            />
+            <input
+              type="text"
+              value={inputQuery}
+              onChange={(e) => setInputQuery(e.target.value)}
+              placeholder="Search Unsplash photos…"
+              className="w-full pl-9 pr-8 py-2 text-sm bg-gray-100 rounded-full border border-transparent focus:border-primary/30 focus:bg-white focus:outline-none transition-all"
+            />
+            {inputQuery && (
+              <button
+                onClick={clearSearch}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {isSearchMode && (
+            <p className="text-xs text-muted-foreground mt-1.5 ml-1">
+              Showing Unsplash results for <span className="font-medium text-foreground">"{activeQuery}"</span>
+            </p>
+          )}
+        </div>
+      </div>
+
       <main className="max-w-[1600px] mx-auto px-[4%] py-8">
+        {images.length === 0 && isSearchMode && (
+          <div className="flex justify-center py-20">
+            <div className="w-[40px] h-[40px] rounded-full border-[4px] border-[#ddd] border-t-primary animate-spin" />
+          </div>
+        )}
         <MasonryGrid>
           {images.map((img, i) => (
             <ImageCard
@@ -231,8 +342,8 @@ export function BrowsePage() {
               title={img.title}
               isFavorited={favoriteUrls.has(img.imageUrl)}
               onFavorite={handleFavorite}
-              onDownload={handleDownload}
-              onClick={setLightboxUrl}
+              onDownload={() => handleDownload(img.fullUrl)}
+              onClick={() => setLightboxKey(img.imageUrl)}
             />
           ))}
         </MasonryGrid>
@@ -240,10 +351,11 @@ export function BrowsePage() {
       </main>
 
       <Lightbox
-        url={lightboxUrl || ""}
-        isOpen={!!lightboxUrl}
-        onClose={() => setLightboxUrl(null)}
-        isFavorited={lightboxUrl ? favoriteUrls.has(lightboxUrl) : false}
+        url={lightboxImg?.fullUrl || ""}
+        favoriteUrl={lightboxImg?.imageUrl}
+        isOpen={!!lightboxKey}
+        onClose={() => setLightboxKey(null)}
+        isFavorited={lightboxKey ? favoriteUrls.has(lightboxKey) : false}
         onFavorite={handleFavorite}
         onDownload={handleDownload}
       />
@@ -262,7 +374,7 @@ export function BrowsePage() {
 // CommunityPage — user-submitted photos
 // ---------------------------------------------------------------------------
 export function CommunityPage() {
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [lightboxKey, setLightboxKey] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
 
   const { isSignedIn } = useUser();
@@ -282,8 +394,15 @@ export function CommunityPage() {
 
   const handleDownload = useCallback(async (url: string) => {
     toast({ title: "Downloading…" });
-    try { await downloadImage(url); }
-    catch { toast({ title: "Download failed", variant: "destructive" }); }
+    try {
+      await downloadImage(url);
+    } catch (e) {
+      if ((e as Error).message === "cors_fallback") {
+        toast({ title: "Opened in new tab", description: "Source site blocks direct download." });
+      } else {
+        toast({ title: "Download failed", variant: "destructive" });
+      }
+    }
   }, [toast]);
 
   const handleFavorite = useCallback((url: string) => {
@@ -324,6 +443,8 @@ export function CommunityPage() {
     );
   }, [addUpload, toast, queryClient]);
 
+  const lightboxUrl = lightboxKey ?? "";
+
   return (
     <div className="min-h-screen bg-background">
       <Header onShare={handleShare} />
@@ -355,7 +476,7 @@ export function CommunityPage() {
                 isFavorited={favoriteUrls.has(img.imageUrl)}
                 onFavorite={handleFavorite}
                 onDownload={handleDownload}
-                onClick={setLightboxUrl}
+                onClick={(url) => setLightboxKey(url)}
               />
             ))}
           </MasonryGrid>
@@ -363,10 +484,10 @@ export function CommunityPage() {
       </main>
 
       <Lightbox
-        url={lightboxUrl || ""}
-        isOpen={!!lightboxUrl}
-        onClose={() => setLightboxUrl(null)}
-        isFavorited={lightboxUrl ? favoriteUrls.has(lightboxUrl) : false}
+        url={lightboxUrl}
+        isOpen={!!lightboxKey}
+        onClose={() => setLightboxKey(null)}
+        isFavorited={lightboxKey ? favoriteUrls.has(lightboxKey) : false}
         onFavorite={handleFavorite}
         onDownload={handleDownload}
       />

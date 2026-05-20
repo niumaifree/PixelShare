@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isValidImageUrl } from "@/lib/utils";
 
+type ImgStatus = "idle" | "loading" | "valid" | "error";
+
 interface ShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -22,11 +24,28 @@ export default function ShareDialog({ open, onOpenChange, onSubmit, isPending }:
   const [shareUrl, setShareUrl] = useState("");
   const [shareTitle, setShareTitle] = useState("");
   const [urlError, setUrlError] = useState("");
+  const [imgStatus, setImgStatus] = useState<ImgStatus>("idle");
+
+  // Test if the image actually loads whenever the URL changes
+  useEffect(() => {
+    const trimmed = shareUrl.trim();
+    if (!trimmed || !isValidImageUrl(trimmed)) {
+      setImgStatus("idle");
+      return;
+    }
+    setImgStatus("loading");
+    const img = new Image();
+    img.onload = () => setImgStatus("valid");
+    img.onerror = () => setImgStatus("error");
+    img.src = trimmed;
+    return () => { img.onload = null; img.onerror = null; };
+  }, [shareUrl]);
 
   const handleClose = useCallback(() => {
     setShareUrl("");
     setShareTitle("");
     setUrlError("");
+    setImgStatus("idle");
     onOpenChange(false);
   }, [onOpenChange]);
 
@@ -41,11 +60,14 @@ export default function ShareDialog({ open, onOpenChange, onSubmit, isPending }:
     onSubmit(trimmed, shareTitle.trim() || null);
     setShareUrl("");
     setShareTitle("");
+    setImgStatus("idle");
   }, [shareUrl, shareTitle, onSubmit]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleSubmit();
   };
+
+  const showPreview = isValidImageUrl(shareUrl.trim()) && shareUrl.trim();
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -64,10 +86,13 @@ export default function ShareDialog({ open, onOpenChange, onSubmit, isPending }:
               onKeyDown={handleKeyDown}
               aria-describedby={urlError ? "share-url-error" : undefined}
             />
-            {urlError ? (
+            {urlError && (
               <p id="share-url-error" className="text-xs text-destructive">{urlError}</p>
-            ) : (
-              <p className="text-xs text-muted-foreground">Paste a direct link to a publicly accessible image.</p>
+            )}
+            {!urlError && (
+              <p className="text-xs text-muted-foreground">
+                Paste a direct link to a publicly accessible image.
+              </p>
             )}
           </div>
           <div className="flex flex-col gap-1.5">
@@ -80,14 +105,33 @@ export default function ShareDialog({ open, onOpenChange, onSubmit, isPending }:
               onKeyDown={handleKeyDown}
             />
           </div>
-          {shareUrl.trim() && isValidImageUrl(shareUrl.trim()) && (
-            <div className="rounded-xl overflow-hidden border border-gray-200 max-h-52">
-              <img
-                src={shareUrl}
-                alt="preview"
-                className="w-full h-full object-cover"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-              />
+
+          {showPreview && (
+            <div className="flex flex-col gap-1.5">
+              <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-50 min-h-[80px] flex items-center justify-center">
+                {imgStatus === "loading" && (
+                  <div className="w-6 h-6 rounded-full border-2 border-gray-300 border-t-primary animate-spin" />
+                )}
+                {(imgStatus === "valid" || imgStatus === "loading") && (
+                  <img
+                    src={shareUrl.trim()}
+                    alt="preview"
+                    className={`w-full max-h-52 object-cover transition-opacity ${imgStatus === "valid" ? "opacity-100" : "opacity-0 absolute"}`}
+                    onError={() => setImgStatus("error")}
+                  />
+                )}
+                {imgStatus === "error" && (
+                  <div className="text-center py-4 px-3">
+                    <p className="text-xs text-amber-600 font-medium">⚠ Image failed to load</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      It may not be visible to others, or the site may block direct linking.
+                    </p>
+                  </div>
+                )}
+              </div>
+              {imgStatus === "valid" && (
+                <p className="text-xs text-green-600">✓ Image loaded successfully</p>
+              )}
             </div>
           )}
         </div>
