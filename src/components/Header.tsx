@@ -44,20 +44,11 @@ export default function Header({ onShare, searchQuery, onSearchChange }: HeaderP
           PixelShare
         </button>
 
-        {/* Left nav */}
-        <div className="flex items-center gap-5 flex-shrink-0">
-          {navLink("/", "Browse")}
-          {navLink("/community", "Community")}
-        </div>
-
-        {/* Search bar — grows to fill space */}
-        {showSearch && (
-          <div className="flex-1 min-w-0 max-w-md">
+        {/* Search bar — grows to fill the middle */}
+        {showSearch ? (
+          <div className="flex-1 min-w-0 max-w-sm">
             <div className="relative">
-              <Search
-                size={15}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-              />
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
               <input
                 ref={inputRef}
                 type="text"
@@ -76,13 +67,15 @@ export default function Header({ onShare, searchQuery, onSearchChange }: HeaderP
               )}
             </div>
           </div>
+        ) : (
+          <div className="flex-1" />
         )}
 
-        {/* Spacer when no search */}
-        {!showSearch && <div className="flex-1" />}
-
-        {/* Right nav */}
+        {/* Right nav — same layout as original */}
         <nav className="flex items-center gap-5 flex-shrink-0">
+          {navLink("/", "Browse")}
+          {navLink("/community", "Community")}
+
           {isSignedIn ? (
             <>
               {navLink("/collection", "My Collection")}
