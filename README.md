@@ -109,3 +109,7 @@ PORT=5000 BASE_PATH=/ pnpm run dev
 - Unsplash Access Key 会暴露在前端，建议在 Unsplash 控制台限制允许的来源域名
 - Supabase anon key 本身是公开安全的，真正的访问控制由 RLS 策略决定
 - Clerk 开发环境密钥有调用限制，生产环境请使用正式密钥
+
+## License
+
+[MIT](./LICENSE) © 2026 niumaifree
