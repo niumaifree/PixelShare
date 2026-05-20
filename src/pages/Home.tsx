@@ -4,7 +4,6 @@ import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { downloadImage } from "@/lib/utils";
-import { Search, X } from "lucide-react";
 import Header from "@/components/Header";
 import ImageCard from "@/components/ImageCard";
 import MasonryGrid from "@/components/MasonryGrid";
@@ -25,8 +24,8 @@ import {
 // ---------------------------------------------------------------------------
 interface GalleryImage {
   id: string;
-  imageUrl: string;   // thumbnail (~400px) used in the grid and as the favorites key
-  fullUrl: string;    // full-quality URL used in the lightbox and for downloads
+  imageUrl: string;  // thumbnail (~400px) — favorites key
+  fullUrl: string;   // full-quality for lightbox / download
   title?: string;
 }
 
@@ -37,6 +36,25 @@ const BATCH = 20;
 const UNSPLASH_ACCESS_KEY = import.meta.env.VITE_UNSPLASH_ACCESS_KEY as string;
 const PICSUM_TOTAL_PAGES = 100;
 const SESSION_START_PAGE = Math.floor(Math.random() * PICSUM_TOTAL_PAGES) + 1;
+
+// ---------------------------------------------------------------------------
+// Picsum metadata cache (fetched once per session for search)
+// ---------------------------------------------------------------------------
+let picsumCachePromise: Promise<{ id: string; author: string; width: number; height: number }[]> | null = null;
+
+function getPicsumCache() {
+  if (!picsumCachePromise) {
+    // Fetch first 5 pages (limit=100 each → up to 500 images) for author filtering
+    picsumCachePromise = Promise.all(
+      [1, 2, 3, 4, 5].map(p =>
+        fetch(`https://picsum.photos/v2/list?page=${p}&limit=100`)
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => [])
+      )
+    ).then(pages => pages.flat());
+  }
+  return picsumCachePromise;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,24 +68,26 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
+function picsumRawToGallery(img: { id: string; author: string; width: number; height: number }): GalleryImage {
+  const thumbH = Math.round(400 * img.height / img.width);
+  const fullH = Math.round(1200 * img.height / img.width);
+  return {
+    id: `picsum-${img.id}`,
+    imageUrl: `https://picsum.photos/id/${img.id}/400/${thumbH}`,
+    fullUrl: `https://picsum.photos/id/${img.id}/1200/${fullH}`,
+    title: img.author,
+  };
+}
+
 // ---------------------------------------------------------------------------
-// Image fetchers
+// Image fetchers — browse mode (merged feed)
 // ---------------------------------------------------------------------------
 async function fetchPicsumPage(pageIndex: number): Promise<GalleryImage[]> {
   const page = ((SESSION_START_PAGE + pageIndex - 1) % PICSUM_TOTAL_PAGES) + 1;
   const res = await fetch(`https://picsum.photos/v2/list?page=${page}&limit=${BATCH}`);
   if (!res.ok) return [];
   const data = await res.json() as { id: string; author: string; width: number; height: number }[];
-  return data.map(img => {
-    const thumbH = Math.round(400 * img.height / img.width);
-    const fullH = Math.round(1200 * img.height / img.width);
-    return {
-      id: `picsum-${img.id}`,
-      imageUrl: `https://picsum.photos/id/${img.id}/400/${thumbH}`,
-      fullUrl: `https://picsum.photos/id/${img.id}/1200/${fullH}`,
-      title: img.author,
-    };
-  });
+  return data.map(picsumRawToGallery);
 }
 
 async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
@@ -100,6 +120,9 @@ async function fetchMergedPage(pageIndex: number): Promise<GalleryImage[]> {
   return shuffle([...picsum, ...unsplash]);
 }
 
+// ---------------------------------------------------------------------------
+// Search fetchers
+// ---------------------------------------------------------------------------
 async function searchUnsplash(query: string, pageIndex: number): Promise<GalleryImage[]> {
   if (!UNSPLASH_ACCESS_KEY || !query.trim()) return [];
   const res = await fetch(
@@ -124,19 +147,27 @@ async function searchUnsplash(query: string, pageIndex: number): Promise<Gallery
   }));
 }
 
+async function searchPicsumByAuthor(query: string): Promise<GalleryImage[]> {
+  const lower = query.toLowerCase();
+  const all = await getPicsumCache();
+  return all
+    .filter(img => img.author.toLowerCase().includes(lower))
+    .map(picsumRawToGallery);
+}
+
 // ---------------------------------------------------------------------------
-// BrowsePage — infinite scroll + keyword search
+// BrowsePage — infinite scroll + search
 // ---------------------------------------------------------------------------
 export function BrowsePage() {
   const [images, setImages] = useState<GalleryImage[]>([]);
   const batchRef = useRef(0);
   const isLoadingRef = useRef(false);
-  const [lightboxKey, setLightboxKey] = useState<string | null>(null); // imageUrl (favorites key)
+  const [lightboxKey, setLightboxKey] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
 
-  // Search state
+  // Search
   const [inputQuery, setInputQuery] = useState("");
-  const [activeQuery, setActiveQuery] = useState(""); // debounced
+  const [activeQuery, setActiveQuery] = useState("");
   const isSearchMode = activeQuery.trim().length > 0;
 
   const { isSignedIn } = useUser();
@@ -153,13 +184,13 @@ export function BrowsePage() {
 
   const favoriteUrls = useMemo(() => new Set(favorites.map((f) => f.imageUrl)), [favorites]);
 
-  // Debounce search input → activeQuery
+  // Debounce
   useEffect(() => {
-    const timer = setTimeout(() => setActiveQuery(inputQuery), 400);
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setActiveQuery(inputQuery), 400);
+    return () => clearTimeout(t);
   }, [inputQuery]);
 
-  // Reset gallery when search mode changes
+  // Reset gallery when query changes
   useEffect(() => {
     setImages([]);
     batchRef.current = 0;
@@ -172,9 +203,17 @@ export function BrowsePage() {
     const pageIndex = batchRef.current + 1;
     batchRef.current = pageIndex;
     try {
-      const newImages = isSearchMode
-        ? await searchUnsplash(activeQuery, pageIndex)
-        : await fetchMergedPage(pageIndex);
+      let newImages: GalleryImage[];
+      if (isSearchMode) {
+        // Search: Unsplash keyword + Picsum author (only fetch Picsum on page 1)
+        const [unsplash, picsum] = await Promise.all([
+          searchUnsplash(activeQuery, pageIndex),
+          pageIndex === 1 ? searchPicsumByAuthor(activeQuery) : Promise.resolve([] as GalleryImage[]),
+        ]);
+        newImages = shuffle([...unsplash, ...picsum]);
+      } else {
+        newImages = await fetchMergedPage(pageIndex);
+      }
       if (newImages.length > 0) {
         setImages(prev => {
           const seen = new Set(prev.map(i => i.id));
@@ -182,20 +221,18 @@ export function BrowsePage() {
         });
       }
     } catch {
-      toast({ title: "Failed to load more photos", variant: "destructive" });
+      toast({ title: "Failed to load photos", variant: "destructive" });
       batchRef.current = pageIndex - 1;
     } finally {
       isLoadingRef.current = false;
     }
   }, [activeQuery, isSearchMode, toast]);
 
-  // Initial load (also re-runs when activeQuery changes via the reset effect)
+  // Initial / search load
   useEffect(() => {
     if (isSearchMode) {
-      // Single first page for search
       loadMore();
     } else {
-      // Pre-load first two pages in parallel for the feed
       (async () => {
         isLoadingRef.current = true;
         batchRef.current = 2;
@@ -212,16 +249,16 @@ export function BrowsePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeQuery]);
 
-  // Scroll-based infinite load — throttled with rAF
+  // Throttled scroll → infinite load
   useEffect(() => {
     let ticking = false;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(() => {
-        const scrolled = window.scrollY + window.innerHeight;
-        const total = document.documentElement.scrollHeight;
-        if (scrolled >= total - 800) loadMore();
+        if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 800) {
+          loadMore();
+        }
         ticking = false;
       });
     };
@@ -286,46 +323,22 @@ export function BrowsePage() {
     );
   }, [addUpload, toast, queryClient, setLocation]);
 
-  const clearSearch = useCallback(() => {
-    setInputQuery("");
-    setActiveQuery("");
-  }, []);
-
   return (
     <div className="min-h-screen bg-background">
-      <Header onShare={handleShare} />
+      <Header
+        onShare={handleShare}
+        searchQuery={inputQuery}
+        onSearchChange={setInputQuery}
+      />
 
-      {/* Search bar */}
-      <div className="sticky top-[57px] z-[999] bg-white/90 backdrop-blur-[12px] border-b border-gray-100 px-[4%] py-3">
-        <div className="max-w-[1600px] mx-auto">
-          <div className="relative max-w-md">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
-            />
-            <input
-              type="text"
-              value={inputQuery}
-              onChange={(e) => setInputQuery(e.target.value)}
-              placeholder="Search Unsplash photos…"
-              className="w-full pl-9 pr-8 py-2 text-sm bg-gray-100 rounded-full border border-transparent focus:border-primary/30 focus:bg-white focus:outline-none transition-all"
-            />
-            {inputQuery && (
-              <button
-                onClick={clearSearch}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-          {isSearchMode && (
-            <p className="text-xs text-muted-foreground mt-1.5 ml-1">
-              Showing Unsplash results for <span className="font-medium text-foreground">"{activeQuery}"</span>
-            </p>
-          )}
+      {isSearchMode && (
+        <div className="max-w-[1600px] mx-auto px-[4%] pt-5 pb-1">
+          <p className="text-sm text-muted-foreground">
+            Unsplash keyword + Picsum photographer results for{" "}
+            <span className="font-semibold text-foreground">"{activeQuery}"</span>
+          </p>
         </div>
-      </div>
+      )}
 
       <main className="max-w-[1600px] mx-auto px-[4%] py-8">
         {images.length === 0 && isSearchMode && (
@@ -443,8 +456,6 @@ export function CommunityPage() {
     );
   }, [addUpload, toast, queryClient]);
 
-  const lightboxUrl = lightboxKey ?? "";
-
   return (
     <div className="min-h-screen bg-background">
       <Header onShare={handleShare} />
@@ -484,7 +495,7 @@ export function CommunityPage() {
       </main>
 
       <Lightbox
-        url={lightboxUrl}
+        url={lightboxKey ?? ""}
         isOpen={!!lightboxKey}
         onClose={() => setLightboxKey(null)}
         isFavorited={lightboxKey ? favoriteUrls.has(lightboxKey) : false}

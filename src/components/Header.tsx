@@ -1,16 +1,20 @@
+import { useRef } from "react";
 import { useLocation } from "wouter";
 import { useUser, useClerk } from "@clerk/react";
-import { Upload } from "lucide-react";
+import { Upload, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface HeaderProps {
   onShare?: () => void;
+  searchQuery?: string;
+  onSearchChange?: (q: string) => void;
 }
 
-export default function Header({ onShare }: HeaderProps) {
+export default function Header({ onShare, searchQuery, onSearchChange }: HeaderProps) {
   const { isSignedIn, user } = useUser();
   const { signOut } = useClerk();
   const [location, setLocation] = useLocation();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const navLink = (href: string, label: string) => {
     const active = location === href;
@@ -27,9 +31,11 @@ export default function Header({ onShare }: HeaderProps) {
     );
   };
 
+  const showSearch = onSearchChange !== undefined;
+
   return (
     <header className="sticky top-0 z-[1000] bg-white/90 backdrop-blur-[12px] border-b border-gray-200 px-[4%] py-[0.8rem]">
-      <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-6">
+      <div className="max-w-[1600px] mx-auto flex items-center gap-5">
         {/* Logo */}
         <button
           onClick={() => setLocation("/")}
@@ -38,11 +44,45 @@ export default function Header({ onShare }: HeaderProps) {
           PixelShare
         </button>
 
-        {/* Right-side nav — everything in one row */}
-        <nav className="flex items-center gap-5 flex-shrink-0">
+        {/* Left nav */}
+        <div className="flex items-center gap-5 flex-shrink-0">
           {navLink("/", "Browse")}
           {navLink("/community", "Community")}
+        </div>
 
+        {/* Search bar — grows to fill space */}
+        {showSearch && (
+          <div className="flex-1 min-w-0 max-w-md">
+            <div className="relative">
+              <Search
+                size={15}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+              />
+              <input
+                ref={inputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="Search photos or photographers…"
+                className="w-full pl-8 pr-7 py-[0.4rem] text-sm bg-gray-100 rounded-full border border-transparent focus:border-primary/30 focus:bg-white focus:outline-none transition-all"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => { onSearchChange(""); inputRef.current?.focus(); }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Spacer when no search */}
+        {!showSearch && <div className="flex-1" />}
+
+        {/* Right nav */}
+        <nav className="flex items-center gap-5 flex-shrink-0">
           {isSignedIn ? (
             <>
               {navLink("/collection", "My Collection")}
@@ -58,7 +98,7 @@ export default function Header({ onShare }: HeaderProps) {
                 </Button>
               )}
 
-              <div className="flex items-center gap-3 border-l border-gray-200 pl-5">
+              <div className="flex items-center gap-3 border-l border-gray-200 pl-4">
                 <div className="w-8 h-8 rounded-full bg-primary/10 overflow-hidden flex items-center justify-center text-primary font-bold flex-shrink-0">
                   {user.imageUrl ? (
                     <img src={user.imageUrl} alt="avatar" className="w-full h-full object-cover" />
