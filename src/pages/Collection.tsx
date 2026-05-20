@@ -3,6 +3,7 @@ import { useUser } from "@clerk/react";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { downloadImage } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import Header from "@/components/Header";
 import ImageCard from "@/components/ImageCard";
@@ -13,21 +14,6 @@ import {
   useRemoveFavoriteByUrl,
   getListFavoritesQueryKey,
 } from "@workspace/api-client-react";
-
-async function downloadImageClientSide(url: string): Promise<void> {
-  const res = await fetch(url, { mode: "cors" });
-  if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-  const blob = await res.blob();
-  const ext = blob.type.includes("png") ? "png" : blob.type.includes("gif") ? "gif" : "jpg";
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = `pixelshare-photo.${ext}`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(objectUrl);
-}
 
 export default function CollectionPage() {
   const { isSignedIn, isLoaded } = useUser();
@@ -48,7 +34,7 @@ export default function CollectionPage() {
   const handleDownload = useCallback(async (url: string) => {
     toast({ title: "Downloading…" });
     try {
-      await downloadImageClientSide(url);
+      await downloadImage(url);
     } catch {
       toast({ title: "Download failed", description: "Could not fetch the image.", variant: "destructive" });
     }
@@ -144,6 +130,7 @@ export default function CollectionPage() {
         isOpen={!!lightboxUrl}
         onClose={() => setLightboxUrl(null)}
         isFavorited={true}
+        onFavorite={handleUnfavorite}
         onDownload={handleDownload}
       />
     </div>

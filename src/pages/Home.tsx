@@ -3,20 +3,12 @@ import { useUser } from "@clerk/react";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { downloadImage } from "@/lib/utils";
 import Header from "@/components/Header";
 import ImageCard from "@/components/ImageCard";
 import MasonryGrid from "@/components/MasonryGrid";
 import Lightbox from "@/components/Lightbox";
+import ShareDialog from "@/components/ShareDialog";
 import {
   useListFavorites,
   useAddFavorite,
@@ -83,11 +75,12 @@ async function fetchUnsplashPage(pageIndex: number): Promise<GalleryImage[]> {
     description: string | null;
     alt_description: string | null;
     user: { name: string };
-    urls: { regular: string };
+    urls: { small: string; regular: string };
   }[];
   return data.map(img => ({
     id: `unsplash-${img.id}`,
-    imageUrl: img.urls.regular,
+    // Use `small` (~400px) for the grid, `regular` is served separately for lightbox
+    imageUrl: img.urls.small,
     title: img.description ?? img.alt_description ?? img.user.name,
   }));
 }
@@ -101,24 +94,6 @@ async function fetchMergedPage(pageIndex: number): Promise<GalleryImage[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Pure client-side download: fetch → Blob → anchor click
-// ---------------------------------------------------------------------------
-async function downloadImageClientSide(url: string): Promise<void> {
-  const res = await fetch(url, { mode: "cors" });
-  if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-  const blob = await res.blob();
-  const ext = blob.type.includes("png") ? "png" : blob.type.includes("gif") ? "gif" : "jpg";
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = `pixelshare-photo.${ext}`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(objectUrl);
-}
-
-// ---------------------------------------------------------------------------
 // BrowsePage — infinite scroll
 // ---------------------------------------------------------------------------
 export function BrowsePage() {
@@ -127,8 +102,6 @@ export function BrowsePage() {
   const isLoadingRef = useRef(false);
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const [shareUrl, setShareUrl] = useState("");
-  const [shareTitle, setShareTitle] = useState("");
 
   const { isSignedIn } = useUser();
   const [, setLocation] = useLocation();
@@ -158,11 +131,13 @@ export function BrowsePage() {
         });
       }
     } catch {
-      // silently retry on next scroll
+      toast({ title: "Failed to load more photos", variant: "destructive" });
+      // Revert page counter so next scroll attempt retries the same page
+      batchRef.current = pageIndex - 1;
     } finally {
       isLoadingRef.current = false;
     }
-  }, []);
+  }, [toast]);
 
   // Pre-load first two pages on mount in parallel
   useEffect(() => {
@@ -172,18 +147,27 @@ export function BrowsePage() {
       try {
         const [p1, p2] = await Promise.all([fetchMergedPage(1), fetchMergedPage(2)]);
         setImages([...p1, ...p2]);
+      } catch {
+        toast({ title: "Failed to load photos", variant: "destructive" });
       } finally {
         isLoadingRef.current = false;
       }
     })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll-based infinite load
+  // Scroll-based infinite load — throttled with a rAF flag
   useEffect(() => {
+    let ticking = false;
     const onScroll = () => {
-      const scrolled = window.scrollY + window.innerHeight;
-      const total = document.documentElement.scrollHeight;
-      if (scrolled >= total - 800) loadMore();
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const scrolled = window.scrollY + window.innerHeight;
+        const total = document.documentElement.scrollHeight;
+        if (scrolled >= total - 800) loadMore();
+        ticking = false;
+      });
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -191,7 +175,7 @@ export function BrowsePage() {
 
   const handleDownload = useCallback(async (url: string) => {
     toast({ title: "Downloading…" });
-    try { await downloadImageClientSide(url); }
+    try { await downloadImage(url); }
     catch { toast({ title: "Download failed", variant: "destructive" }); }
   }, [toast]);
 
@@ -219,21 +203,20 @@ export function BrowsePage() {
     setShareOpen(true);
   }, [isSignedIn, setLocation]);
 
-  const handleShareSubmit = useCallback(() => {
-    if (!shareUrl.trim()) return;
+  const handleShareSubmit = useCallback((imageUrl: string, title: string | null) => {
     addUpload.mutate(
-      { data: { imageUrl: shareUrl.trim(), title: shareTitle.trim() || null } },
+      { data: { imageUrl, title } },
       {
         onSuccess: () => {
           toast({ title: "Photo shared!" });
-          setShareUrl(""); setShareTitle(""); setShareOpen(false);
+          setShareOpen(false);
           queryClient.invalidateQueries({ queryKey: getListImagesQueryKey() });
           setLocation("/community");
         },
         onError: () => toast({ title: "Failed to share", variant: "destructive" }),
       }
     );
-  }, [shareUrl, shareTitle, addUpload, toast, queryClient, setLocation]);
+  }, [addUpload, toast, queryClient, setLocation]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -253,7 +236,6 @@ export function BrowsePage() {
             />
           ))}
         </MasonryGrid>
-        {/* Scroll trigger padding — load next batch before hitting the very bottom */}
         <div className="h-32" />
       </main>
 
@@ -266,56 +248,12 @@ export function BrowsePage() {
         onDownload={handleDownload}
       />
 
-      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-        <DialogContent className="sm:max-w-[460px]">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">Share a Photo</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 py-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="share-url">Image URL <span className="text-primary">*</span></Label>
-              <Input
-                id="share-url"
-                placeholder="https://example.com/photo.jpg"
-                value={shareUrl}
-                onChange={(e) => setShareUrl(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleShareSubmit()}
-              />
-              <p className="text-xs text-muted-foreground">Paste a direct link to a publicly accessible image.</p>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="share-title">Title <span className="text-muted-foreground text-xs">(optional)</span></Label>
-              <Input
-                id="share-title"
-                placeholder="A beautiful sunset…"
-                value={shareTitle}
-                onChange={(e) => setShareTitle(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleShareSubmit()}
-              />
-            </div>
-            {shareUrl.trim() && (
-              <div className="rounded-xl overflow-hidden border border-gray-200 max-h-52">
-                <img
-                  src={shareUrl}
-                  alt="preview"
-                  className="w-full h-full object-cover"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              </div>
-            )}
-          </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShareOpen(false)}>Cancel</Button>
-            <Button
-              onClick={handleShareSubmit}
-              disabled={!shareUrl.trim() || addUpload.isPending}
-              className="bg-primary hover:bg-primary/90 text-white"
-            >
-              {addUpload.isPending ? "Sharing…" : "Share Photo"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        onSubmit={handleShareSubmit}
+        isPending={addUpload.isPending}
+      />
     </div>
   );
 }
@@ -326,8 +264,6 @@ export function BrowsePage() {
 export function CommunityPage() {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
-  const [shareUrl, setShareUrl] = useState("");
-  const [shareTitle, setShareTitle] = useState("");
 
   const { isSignedIn } = useUser();
   const [, setLocation] = useLocation();
@@ -346,7 +282,7 @@ export function CommunityPage() {
 
   const handleDownload = useCallback(async (url: string) => {
     toast({ title: "Downloading…" });
-    try { await downloadImageClientSide(url); }
+    try { await downloadImage(url); }
     catch { toast({ title: "Download failed", variant: "destructive" }); }
   }, [toast]);
 
@@ -374,20 +310,19 @@ export function CommunityPage() {
     setShareOpen(true);
   }, [isSignedIn, setLocation]);
 
-  const handleShareSubmit = useCallback(() => {
-    if (!shareUrl.trim()) return;
+  const handleShareSubmit = useCallback((imageUrl: string, title: string | null) => {
     addUpload.mutate(
-      { data: { imageUrl: shareUrl.trim(), title: shareTitle.trim() || null } },
+      { data: { imageUrl, title } },
       {
         onSuccess: () => {
           toast({ title: "Photo shared!" });
-          setShareUrl(""); setShareTitle(""); setShareOpen(false);
+          setShareOpen(false);
           queryClient.invalidateQueries({ queryKey: getListImagesQueryKey() });
         },
         onError: () => toast({ title: "Failed to share", variant: "destructive" }),
       }
     );
-  }, [shareUrl, shareTitle, addUpload, toast, queryClient]);
+  }, [addUpload, toast, queryClient]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -402,12 +337,12 @@ export function CommunityPage() {
             <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-6 text-3xl">📷</div>
             <h2 className="text-2xl font-bold mb-4">No community photos yet</h2>
             <p className="text-muted-foreground mb-8">Be the first to share a photo.</p>
-            <Button
+            <button
               onClick={handleShare}
-              className="bg-primary hover:bg-primary/90 rounded-full px-8 py-6 text-base font-semibold"
+              className="bg-primary hover:bg-primary/90 rounded-full px-8 py-4 text-base font-semibold text-white transition-colors"
             >
               Share a Photo
-            </Button>
+            </button>
           </div>
         ) : (
           <MasonryGrid>
@@ -436,54 +371,14 @@ export function CommunityPage() {
         onDownload={handleDownload}
       />
 
-      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-        <DialogContent className="sm:max-w-[460px]">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold">Share a Photo</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4 py-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="share-url-c">Image URL <span className="text-primary">*</span></Label>
-              <Input
-                id="share-url-c"
-                placeholder="https://example.com/photo.jpg"
-                value={shareUrl}
-                onChange={(e) => setShareUrl(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleShareSubmit()}
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="share-title-c">Title <span className="text-muted-foreground text-xs">(optional)</span></Label>
-              <Input
-                id="share-title-c"
-                placeholder="A beautiful sunset…"
-                value={shareTitle}
-                onChange={(e) => setShareTitle(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleShareSubmit()}
-              />
-            </div>
-            {shareUrl.trim() && (
-              <div className="rounded-xl overflow-hidden border border-gray-200 max-h-52">
-                <img src={shareUrl} alt="preview" className="w-full h-full object-cover"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-              </div>
-            )}
-          </div>
-          <DialogFooter className="gap-2">
-            <Button variant="outline" onClick={() => setShareOpen(false)}>Cancel</Button>
-            <Button
-              onClick={handleShareSubmit}
-              disabled={!shareUrl.trim() || addUpload.isPending}
-              className="bg-primary hover:bg-primary/90 text-white"
-            >
-              {addUpload.isPending ? "Sharing…" : "Share Photo"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        onSubmit={handleShareSubmit}
+        isPending={addUpload.isPending}
+      />
     </div>
   );
 }
 
-// Default export — Browse page
 export default BrowsePage;
